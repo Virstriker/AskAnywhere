@@ -41,6 +41,31 @@ This app supports any Gemini model name via `GEMINI_MODEL`.
    python main.py
    ```
 
+## Build executable (.exe)
+
+1. Install PyInstaller:
+
+   ```powershell
+   pip install pyinstaller
+   ```
+
+2. Build:
+
+   ```powershell
+   pyinstaller --noconfirm --clean --onefile --name AskAnywhere main.py
+   ```
+
+3. Copy config template and fill it:
+
+   - Copy `askanywhere.config.json.example` to `dist/askanywhere.config.json`.
+   - Set your real `gemini_api_key` and preferred `gemini_model`.
+
+4. Launch by double-clicking:
+
+   - `dist/AskAnywhere.exe`
+
+Note: In `.exe` mode, the app reads config from `askanywhere.config.json` in the same directory as the executable.
+
 ## Notes and limitations
 
 - Automatic selection capture is best-effort and depends on how each app handles `Ctrl+C`.

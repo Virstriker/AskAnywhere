@@ -29,15 +29,25 @@ class AskWorker(QThread):
 
 class AskAnywhereApp:
     def __init__(self) -> None:
-        self.settings = load_settings()
         self.qt_app = QApplication(sys.argv)
         self.qt_app.setQuitOnLastWindowClosed(False)
+
+        try:
+            self.settings = load_settings()
+        except Exception as ex:
+            QMessageBox.critical(
+                None,
+                "Configuration Error",
+                str(ex),
+            )
+            raise
 
         if not self.settings.gemini_api_key:
             QMessageBox.critical(
                 None,
                 "Missing GEMINI_API_KEY",
-                "Create a .env file with GEMINI_API_KEY before running AskAnywhere.",
+                "For .exe builds, create askanywhere.config.json next to the executable.\n"
+                "For source runs, set GEMINI_API_KEY in .env.",
             )
             raise RuntimeError("Missing GEMINI_API_KEY")
 
