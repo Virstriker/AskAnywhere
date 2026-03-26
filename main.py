@@ -31,6 +31,7 @@ class AskAnywhereApp:
     def __init__(self) -> None:
         self.settings = load_settings()
         self.qt_app = QApplication(sys.argv)
+        self.qt_app.setQuitOnLastWindowClosed(False)
 
         if not self.settings.gemini_api_key:
             QMessageBox.critical(
@@ -48,15 +49,27 @@ class AskAnywhereApp:
         self.watcher = GlobalSelectionWatcher()
 
         self.watcher.selection_captured.connect(self._on_selection_captured)
+        self.watcher.listening_toggled.connect(self._on_listening_toggled)
         self.popup.message_submitted.connect(self._on_message_submitted)
         self.popup.closed.connect(self._on_popup_closed)
+        self.qt_app.aboutToQuit.connect(self._shutdown)
 
-        self._worker = None
+        self._worker: AskWorker | None = None
 
     def run(self) -> int:
-        print("AskAnywhere running. Select text anywhere to open the popup.")
+        print(
+            "AskAnywhere running. Drag-select text to open popup. "
+            "Press Ctrl+Shift+Z to toggle listening on/off.",
+            flush=True,
+        )
         self.watcher.start()
         return self.qt_app.exec()
+
+    def _on_listening_toggled(self, enabled: bool) -> None:
+        state = "ENABLED" if enabled else "DISABLED"
+        print(f"[AskAnywhere][App] Listening {state}", flush=True)
+        if not enabled and self.popup.isVisible():
+            self.popup.hide()
 
     def _on_selection_captured(self, text: str, x: int, y: int) -> None:
         print(
@@ -71,6 +84,10 @@ class AskAnywhereApp:
 
     def _on_message_submitted(self, user_input: str) -> None:
         print(f"[AskAnywhere][App] User message submitted len={len(user_input)}", flush=True)
+        if self._worker and self._worker.isRunning():
+            print("[AskAnywhere][App] Worker already running, skipping new request", flush=True)
+            return
+
         selected_text = self.popup.current_selection
         self.popup.add_user_message(user_input)
         self.popup.set_busy(True)
@@ -91,9 +108,23 @@ class AskAnywhereApp:
 
     def _on_ai_finished(self) -> None:
         self.popup.set_busy(False)
+        if self._worker:
+            self._worker.deleteLater()
+            self._worker = None
 
     def _on_popup_closed(self) -> None:
         self.popup.set_busy(False)
+
+    def _shutdown(self) -> None:
+        print("[AskAnywhere][App] Shutting down", flush=True)
+        try:
+            self.watcher.stop()
+        except Exception as ex:
+            print(f"[AskAnywhere][App] Watcher stop error: {ex}", flush=True)
+
+        if self._worker and self._worker.isRunning():
+            print("[AskAnywhere][App] Waiting for worker thread to finish", flush=True)
+            self._worker.wait(8000)
 
 
 def main() -> None:

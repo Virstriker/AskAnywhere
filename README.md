@@ -6,6 +6,7 @@ AskAnywhere is a desktop helper that watches text selection across apps, opens a
 
 - Captures selected text automatically on text selection (left mouse release).
 - Triggers `Ctrl+C` internally to read selected text.
+- Press `Ctrl+Shift+Z` to toggle listening on/off globally.
 - Shows a floating chat popup near your cursor.
 - Lets you drag the popup around freely.
 - Hides the popup when focus moves away (click outside the popup).

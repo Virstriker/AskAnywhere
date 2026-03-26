@@ -7,12 +7,18 @@ from pynput import keyboard, mouse
 
 class GlobalSelectionWatcher(QObject):
     selection_captured = Signal(str, int, int)
+    listening_toggled = Signal(bool)
     _capture_requested = Signal(int, int)
 
     def __init__(self) -> None:
         super().__init__()
         self._keyboard = keyboard.Controller()
-        self._listener = mouse.Listener(on_click=self._on_click)
+        self._mouse_listener = mouse.Listener(on_click=self._on_click)
+        self._hotkey_listener = keyboard.GlobalHotKeys(
+            {
+                "<ctrl>+<shift>+z": self._toggle_listening,
+            }
+        )
         self._capture_requested.connect(self._capture_selected_text)
         self._last_capture_at = 0.0
         self._press_pos: tuple[int, int] | None = None
@@ -20,11 +26,19 @@ class GlobalSelectionWatcher(QObject):
         self.enabled = True
 
     def start(self) -> None:
-        self._log("Mouse listener started (auto-capture on left-button release)")
-        self._listener.start()
+        self._log("Listeners started (toggle: Ctrl+Shift+Z)")
+        self._mouse_listener.start()
+        self._hotkey_listener.start()
+        self.listening_toggled.emit(self.enabled)
 
     def stop(self) -> None:
-        self._listener.stop()
+        self._mouse_listener.stop()
+        self._hotkey_listener.stop()
+
+    def _toggle_listening(self) -> None:
+        self.enabled = not self.enabled
+        self._log(f"Listening {'ENABLED' if self.enabled else 'DISABLED'}")
+        self.listening_toggled.emit(self.enabled)
 
     def _on_click(self, x: float, y: float, button: mouse.Button, pressed: bool) -> None:
         if not self.enabled:
