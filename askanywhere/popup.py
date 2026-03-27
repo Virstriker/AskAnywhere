@@ -140,6 +140,7 @@ class ChatPopup(QWidget):
         self._busy = False
         self._drag_offset = QPoint()
         self._dragging = False
+        self._pinned = False
         # History: deque of (selected_text, [(role, plain, html), ...])
         self._history: deque = deque(maxlen=5)
         self._current_messages: list = []
@@ -172,6 +173,12 @@ class ChatPopup(QWidget):
         self.history_button.setVisible(False)
         title_row.addWidget(self.history_button)
         title_row.addStretch()
+        self.pin_button = QPushButton("📌")
+        self.pin_button.setObjectName("pinButton")
+        self.pin_button.setFixedWidth(28)
+        self.pin_button.setToolTip("Pin — keep open when focus moves away")
+        self.pin_button.clicked.connect(self._toggle_pin)
+        title_row.addWidget(self.pin_button)
         self.close_button = QPushButton("×")
         self.close_button.setObjectName("closeButton")
         self.close_button.setFixedWidth(28)
@@ -264,11 +271,13 @@ class ChatPopup(QWidget):
         self.selection_view.setCursorPosition(0)
         self._clear_chat()
         self.chips_widget.setVisible(True)
-        self._move_near_cursor(x, y)
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.input.setFocus()
+
+        if not self._pinned:
+            self._move_near_cursor(x, y)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.input.setFocus()
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -290,6 +299,15 @@ class ChatPopup(QWidget):
     # ──────────────────────────────────────────────────────────────
     # Internal helpers
     # ──────────────────────────────────────────────────────────────
+
+    def _toggle_pin(self) -> None:
+        self._pinned = not self._pinned
+        if self._pinned:
+            self.pin_button.setObjectName("pinButtonActive")
+        else:
+            self.pin_button.setObjectName("pinButton")
+        # Re-apply styles so the new object name takes effect
+        self._apply_styles()
 
     def _add_bubble(self, role: str, plain: str, content_html: str) -> None:
         self._current_messages.append((role, plain, content_html))
@@ -379,7 +397,7 @@ class ChatPopup(QWidget):
         self.closed.emit()
 
     def event(self, event) -> bool:
-        if event.type() == QEvent.WindowDeactivate and self.isVisible():
+        if event.type() == QEvent.WindowDeactivate and self.isVisible() and not self._pinned:
             self.hide()
         return super().event(event)
 
@@ -518,6 +536,20 @@ class ChatPopup(QWidget):
                 background-color: rgba(255,99,99,160);
                 border-color: rgba(255,140,140,220);
             }
+
+            /* Pin button */
+            QPushButton#pinButton {
+                background-color: rgba(255,255,255,20);
+                border: 1px solid rgba(255,255,255,50);
+                border-radius: 8px; color: #dbe8ff; font-weight: 700;
+            }
+            QPushButton#pinButton:hover { background-color: rgba(255,255,255,40); }
+            QPushButton#pinButtonActive {
+                background-color: rgba(71,134,255,180);
+                border: 1px solid rgba(148,186,255,200);
+                border-radius: 8px; color: #ffffff; font-weight: 700;
+            }
+            QPushButton#pinButtonActive:hover { background-color: rgba(98,154,255,210); }
 
             QSizeGrip { background: transparent; border: none; }
             """
