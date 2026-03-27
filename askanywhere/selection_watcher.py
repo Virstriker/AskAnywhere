@@ -35,6 +35,10 @@ class GlobalSelectionWatcher(QObject):
         self._mouse_listener.stop()
         self._hotkey_listener.stop()
 
+    def toggle(self) -> None:
+        """Public entry-point to toggle listening (used by tray menu and hotkey)."""
+        self._toggle_listening()
+
     def _toggle_listening(self) -> None:
         self.enabled = not self.enabled
         self._log(f"Listening {'ENABLED' if self.enabled else 'DISABLED'}")

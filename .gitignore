@@ -21,7 +21,6 @@ ENV/
 htmlcov/
 
 # Build artifacts
-dist/
 build/
 *.egg-info/
 
@@ -32,3 +31,6 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+
+askanywhere.config.json.example

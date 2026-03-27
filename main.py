@@ -1,7 +1,8 @@
 import sys
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from askanywhere.config import load_settings
 from askanywhere.gemini_service import GeminiChatService
@@ -27,6 +28,21 @@ class AskWorker(QThread):
             self.failure.emit(str(ex))
 
 
+def _make_tray_icon(enabled: bool) -> QIcon:
+    """Programmatically draw a coloured circle as the tray icon."""
+    size = 32
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    color = QColor(71, 134, 255) if enabled else QColor(110, 110, 130)
+    painter.setBrush(color)
+    painter.setPen(QColor(180, 200, 255, 100))
+    painter.drawEllipse(4, 4, size - 8, size - 8)
+    painter.end()
+    return QIcon(pixmap)
+
+
 class AskAnywhereApp:
     def __init__(self) -> None:
         self.qt_app = QApplication(sys.argv)
@@ -35,11 +51,7 @@ class AskAnywhereApp:
         try:
             self.settings = load_settings()
         except Exception as ex:
-            QMessageBox.critical(
-                None,
-                "Configuration Error",
-                str(ex),
-            )
+            QMessageBox.critical(None, "Configuration Error", str(ex))
             raise
 
         if not self.settings.gemini_api_key:
@@ -64,7 +76,22 @@ class AskAnywhereApp:
         self.popup.closed.connect(self._on_popup_closed)
         self.qt_app.aboutToQuit.connect(self._shutdown)
 
+        # ── System tray ──
+        self.tray = QSystemTrayIcon(self.qt_app)
+        self.tray.setIcon(_make_tray_icon(True))
+        self.tray.setToolTip("AskAnywhere — Listening")
+        self._build_tray_menu()
+        self.tray.show()
+
         self._worker: AskWorker | None = None
+
+    def _build_tray_menu(self) -> None:
+        menu = QMenu()
+        self._toggle_action = menu.addAction("⏸  Pause listening")
+        self._toggle_action.triggered.connect(self.watcher.toggle)
+        menu.addSeparator()
+        menu.addAction("Quit").triggered.connect(self.qt_app.quit)
+        self.tray.setContextMenu(menu)
 
     def run(self) -> int:
         print(
@@ -78,6 +105,11 @@ class AskAnywhereApp:
     def _on_listening_toggled(self, enabled: bool) -> None:
         state = "ENABLED" if enabled else "DISABLED"
         print(f"[AskAnywhere][App] Listening {state}", flush=True)
+        self.tray.setIcon(_make_tray_icon(enabled))
+        self.tray.setToolTip(f"AskAnywhere — {'Listening' if enabled else 'Paused'}")
+        self._toggle_action.setText(
+            "⏸  Pause listening" if enabled else "▶  Resume listening"
+        )
         if not enabled and self.popup.isVisible():
             self.popup.hide()
 
