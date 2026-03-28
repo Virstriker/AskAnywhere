@@ -1,4 +1,33 @@
 {
-  "gemini_api_key": "API_KEY",
-  "gemini_model": "gemini-3-flash-preview"
+  "api_keys": {
+    "gemini": "",
+    "openrouter": ""
+  },
+  "models": [
+    {
+      "model_name": "gemini/Gemini 2.5 Flash",
+      "model_id": "gemini-2.5-flash"
+    },
+    {
+      "model_name": "gemini/Gemini 3 Flash",
+      "model_id": "gemini-3-flash-preview"
+    },
+    {
+      "model_name": "openrouter/Nvidia Nemotron 3 Super",
+      "model_id": "nvidia/nemotron-3-super-120b-a12b:free"
+    },
+    {
+      "model_name": "openrouter/GLM 4.5 Air",
+      "model_id": "z-ai/glm-4.5-air:free"
+    },
+    {
+      "model_name": "openrouter/Qwen 3 Coder",
+      "model_id": "qwen/qwen3-coder:free"
+    },
+    {
+      "model_name": "openrouter/GPT OSS 120B",
+      "model_id": "openai/gpt-oss-120b:free"
+    }
+  ],
+  "active_model": "gemini-2.5-flash"
 }

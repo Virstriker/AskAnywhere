@@ -4,17 +4,20 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from askanywhere.config import load_settings
-from askanywhere.gemini_service import GeminiChatService
+from askanywhere.ai_service import create_service
+from askanywhere.config import load_settings, save_active_model
 from askanywhere.popup import ChatPopup
 from askanywhere.selection_watcher import GlobalSelectionWatcher
 
 
+# ── Streaming worker ────────────────────────────────────────────────────────
+
 class AskWorker(QThread):
-    success = Signal(str)
+    chunk_received = Signal(str)   # one text chunk at a time
+    streaming_done = Signal()      # all chunks delivered
     failure = Signal(str)
 
-    def __init__(self, service: GeminiChatService, selected_text: str, user_input: str) -> None:
+    def __init__(self, service, selected_text: str, user_input: str) -> None:
         super().__init__()
         self._service = service
         self._selected_text = selected_text
@@ -22,11 +25,18 @@ class AskWorker(QThread):
 
     def run(self) -> None:
         try:
-            answer = self._service.send_message(self._selected_text, self._user_input)
-            self.success.emit(answer)
+            for chunk in self._service.stream_message(
+                self._selected_text, self._user_input
+            ):
+                if self.isInterruptionRequested():
+                    break
+                self.chunk_received.emit(chunk)
+            self.streaming_done.emit()
         except Exception as ex:
             self.failure.emit(str(ex))
 
+
+# ── Tray icon ───────────────────────────────────────────────────────────────
 
 def _make_tray_icon(enabled: bool) -> QIcon:
     """Programmatically draw a coloured circle as the tray icon."""
@@ -43,6 +53,8 @@ def _make_tray_icon(enabled: bool) -> QIcon:
     return QIcon(pixmap)
 
 
+# ── Application ─────────────────────────────────────────────────────────────
+
 class AskAnywhereApp:
     def __init__(self) -> None:
         self.qt_app = QApplication(sys.argv)
@@ -54,25 +66,33 @@ class AskAnywhereApp:
             QMessageBox.critical(None, "Configuration Error", str(ex))
             raise
 
-        if not self.settings.gemini_api_key:
+        active_model = self.settings.get_active_model()
+        if not active_model:
+            QMessageBox.critical(None, "No Models", "No models configured.")
+            raise RuntimeError("No models configured")
+
+        api_key = self.settings.get_api_key(active_model.provider)
+        if not api_key:
             QMessageBox.critical(
                 None,
-                "Missing GEMINI_API_KEY",
-                "For .exe builds, create askanywhere.config.json next to the executable.\n"
-                "For source runs, set GEMINI_API_KEY in .env.",
+                f"Missing API key — {active_model.provider}",
+                f"Set api_keys.{active_model.provider} in askanywhere.config.json\n"
+                "(or GEMINI_API_KEY in .env for dev mode).",
             )
-            raise RuntimeError("Missing GEMINI_API_KEY")
+            raise RuntimeError(f"Missing API key for {active_model.provider}")
 
-        self.service = GeminiChatService(
-            api_key=self.settings.gemini_api_key,
-            model=self.settings.gemini_model,
+        self.service = create_service(
+            active_model.provider, api_key, active_model.model_id
         )
-        self.popup = ChatPopup(model_name=self.settings.gemini_model)
+
+        self.popup = ChatPopup()
+        self.popup.set_models(self.settings.models, self.settings.active_model)
         self.watcher = GlobalSelectionWatcher()
 
         self.watcher.selection_captured.connect(self._on_selection_captured)
         self.watcher.listening_toggled.connect(self._on_listening_toggled)
         self.popup.message_submitted.connect(self._on_message_submitted)
+        self.popup.model_changed.connect(self._on_model_changed)
         self.popup.closed.connect(self._on_popup_closed)
         self.qt_app.aboutToQuit.connect(self._shutdown)
 
@@ -102,6 +122,8 @@ class AskAnywhereApp:
         self.watcher.start()
         return self.qt_app.exec()
 
+    # ── Slots ────────────────────────────────────────────────────────────────
+
     def _on_listening_toggled(self, enabled: bool) -> None:
         state = "ENABLED" if enabled else "DISABLED"
         print(f"[AskAnywhere][App] Listening {state}", flush=True)
@@ -127,25 +149,27 @@ class AskAnywhereApp:
     def _on_message_submitted(self, user_input: str) -> None:
         print(f"[AskAnywhere][App] User message submitted len={len(user_input)}", flush=True)
         if self._worker and self._worker.isRunning():
-            print("[AskAnywhere][App] Worker already running, skipping new request", flush=True)
+            print("[AskAnywhere][App] Worker already running, skipping", flush=True)
             return
 
         selected_text = self.popup.current_selection
         self.popup.add_user_message(user_input)
+        self.popup.start_ai_stream()       # creates streaming bubble
         self.popup.set_busy(True)
 
         self._worker = AskWorker(self.service, selected_text, user_input)
-        self._worker.success.connect(self._on_ai_success)
+        self._worker.chunk_received.connect(self.popup.append_stream_chunk)
+        self._worker.streaming_done.connect(self._on_stream_done)
         self._worker.failure.connect(self._on_ai_failure)
         self._worker.finished.connect(self._on_ai_finished)
         self._worker.start()
 
-    def _on_ai_success(self, answer: str) -> None:
-        print(f"[AskAnywhere][App] AI response received len={len(answer)}", flush=True)
-        self.popup.add_ai_message(answer)
+    def _on_stream_done(self) -> None:
+        self.popup.finalize_stream_bubble()
 
     def _on_ai_failure(self, error: str) -> None:
         print(f"[AskAnywhere][App] AI error: {error}", flush=True)
+        self.popup.finalize_stream_bubble()   # clear streaming state first
         self.popup.add_error(error)
 
     def _on_ai_finished(self) -> None:
@@ -153,6 +177,25 @@ class AskAnywhereApp:
         if self._worker:
             self._worker.deleteLater()
             self._worker = None
+
+    def _on_model_changed(self, model_id: str) -> None:
+        print(f"[AskAnywhere][App] Model switched to {model_id}", flush=True)
+        self.settings.active_model = model_id
+        save_active_model(model_id)          # persist to config.json
+
+        active_model = self.settings.get_active_model()
+        if not active_model:
+            return
+        api_key = self.settings.get_api_key(active_model.provider)
+        if not api_key:
+            self.popup.add_error(
+                f"No API key configured for provider '{active_model.provider}'."
+            )
+            return
+        self.service = create_service(
+            active_model.provider, api_key, active_model.model_id
+        )
+        print(f"[AskAnywhere][App] Service restarted ({active_model.provider})", flush=True)
 
     def _on_popup_closed(self) -> None:
         self.popup.set_busy(False)
@@ -165,7 +208,8 @@ class AskAnywhereApp:
             print(f"[AskAnywhere][App] Watcher stop error: {ex}", flush=True)
 
         if self._worker and self._worker.isRunning():
-            print("[AskAnywhere][App] Waiting for worker thread to finish", flush=True)
+            print("[AskAnywhere][App] Waiting for worker thread …", flush=True)
+            self._worker.requestInterruption()
             self._worker.wait(8000)
 
 

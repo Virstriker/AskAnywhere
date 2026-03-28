@@ -19,6 +19,11 @@ from PySide6.QtWidgets import (
 )
 
 
+def _md_to_html(text: str) -> str:
+    """Convert markdown text to HTML using Qt's built-in renderer."""
+    return QTextDocumentFragment.fromMarkdown(text).toHtml()
+
+
 class AutoSizeTextBrowser(QTextBrowser):
     """QTextBrowser that auto-sizes its height to fit wrapped content."""
 
@@ -129,18 +134,35 @@ class BubbleWidget(QFrame):
     def _copy_text(self) -> None:
         QApplication.clipboard().setText(self._plain_text)
 
+    # ── Streaming support ───────────────────────────────────────────
+
+    def update_stream(self, chunk: str) -> None:
+        """Append a chunk and re-render with a blinking-cursor indicator."""
+        self._plain_text += chunk
+        self._content.setHtml(_md_to_html(self._plain_text + " ▌"))
+        self._content.updateGeometry()
+
+    def finalize_stream(self) -> None:
+        """Remove cursor indicator and render final markdown."""
+        self._content.setHtml(_md_to_html(self._plain_text))
+        self._content.updateGeometry()
+
 
 class ChatPopup(QWidget):
     message_submitted = Signal(str)
+    model_changed = Signal(str)   # emits model_id when user switches model
     closed = Signal()
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.current_selection = ""
         self._busy = False
         self._drag_offset = QPoint()
         self._dragging = False
         self._pinned = False
+        self._models: list = []          # list[ModelConfig]
+        self._active_model_id: str = ""
+        self._streaming_bubble = None    # BubbleWidget | None
         # History: deque of (selected_text, [(role, plain, html), ...])
         self._history: deque = deque(maxlen=5)
         self._current_messages: list = []
@@ -179,6 +201,12 @@ class ChatPopup(QWidget):
         self.pin_button.setToolTip("Pin — keep open when focus moves away")
         self.pin_button.clicked.connect(self._toggle_pin)
         title_row.addWidget(self.pin_button)
+        self.settings_button = QPushButton("⚙")
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setFixedWidth(28)
+        self.settings_button.setToolTip("Switch model")
+        self.settings_button.clicked.connect(self._show_model_picker)
+        title_row.addWidget(self.settings_button)
         self.close_button = QPushButton("×")
         self.close_button.setObjectName("closeButton")
         self.close_button.setFixedWidth(28)
@@ -306,8 +334,88 @@ class ChatPopup(QWidget):
             self.pin_button.setObjectName("pinButtonActive")
         else:
             self.pin_button.setObjectName("pinButton")
-        # Re-apply styles so the new object name takes effect
         self._apply_styles()
+
+    def set_models(self, models: list, active_model_id: str) -> None:
+        """Called by main to populate the model picker."""
+        self._models = models
+        self._active_model_id = active_model_id
+        self._update_settings_tooltip()
+
+    def _update_settings_tooltip(self) -> None:
+        active = next(
+            (m for m in self._models if m.model_id == self._active_model_id), None
+        )
+        if active:
+            self.settings_button.setToolTip(f"⚙ Model: {active.display_name}")
+
+    def _show_model_picker(self) -> None:
+        if not self._models:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu {"
+            "  background-color: rgba(18,24,38,245);"
+            "  border: 1px solid rgba(130,154,196,110);"
+            "  border-radius: 8px;"
+            "  color: #f5f7fb;"
+            "  font-family: 'Segoe UI';"
+            "  padding: 4px;"
+            "}"
+            "QMenu::item { padding: 5px 14px; border-radius: 5px; }"
+            "QMenu::item:selected { background-color: rgba(71,134,255,140); }"
+            "QMenu::item:disabled { color: rgba(180,200,255,120); font-size: 10px; }"
+            "QMenu::separator { height: 1px; background: rgba(130,154,196,60); margin: 3px 8px; }"
+        )
+        current_provider = None
+        for model in self._models:
+            if model.provider != current_provider:
+                current_provider = model.provider
+                header = menu.addAction(f"── {current_provider.title()} ──")
+                header.setEnabled(False)
+            action = menu.addAction(f"  {model.display_name}")
+            action.setCheckable(True)
+            action.setChecked(model.model_id == self._active_model_id)
+            action.setData(model.model_id)
+
+        chosen = menu.exec(
+            self.settings_button.mapToGlobal(self.settings_button.rect().bottomLeft())
+        )
+        if chosen and chosen.isEnabled() and chosen.data():
+            new_id = chosen.data()
+            self._active_model_id = new_id
+            self._update_settings_tooltip()
+            self.model_changed.emit(new_id)
+
+    # ── Streaming ──────────────────────────────────────────────────
+
+    def start_ai_stream(self) -> None:
+        """Create a streaming bubble and add it to the chat."""
+        bubble = BubbleWidget("AI", "<p>▌</p>", "")
+        self._current_messages.append(("AI", "", ""))  # placeholder
+        self.bubble_layout.insertWidget(self.bubble_layout.count() - 1, bubble)
+        self.scroll_area.verticalScrollBar().setValue(
+            self.scroll_area.verticalScrollBar().maximum()
+        )
+        self._streaming_bubble = bubble
+
+    def append_stream_chunk(self, chunk: str) -> None:
+        """Called from main on each streamed chunk."""
+        if self._streaming_bubble:
+            self._streaming_bubble.update_stream(chunk)
+            self.scroll_area.verticalScrollBar().setValue(
+                self.scroll_area.verticalScrollBar().maximum()
+            )
+
+    def finalize_stream_bubble(self) -> None:
+        """Finalize the streaming bubble and store final text in history."""
+        if self._streaming_bubble:
+            self._streaming_bubble.finalize_stream()
+            if self._current_messages:
+                plain = self._streaming_bubble._plain_text
+                content_html = self._streaming_bubble._content.toHtml()
+                self._current_messages[-1] = ("AI", plain, content_html)
+        self._streaming_bubble = None
 
     def _add_bubble(self, role: str, plain: str, content_html: str) -> None:
         self._current_messages.append((role, plain, content_html))
@@ -320,6 +428,7 @@ class ChatPopup(QWidget):
 
     def _clear_chat(self) -> None:
         self._current_messages = []
+        self._streaming_bubble = None
         while self.bubble_layout.count() > 1:
             item = self.bubble_layout.takeAt(0)
             if item.widget():
@@ -440,7 +549,7 @@ class ChatPopup(QWidget):
 
     @staticmethod
     def _markdown_to_html(markdown_text: str) -> str:
-        return QTextDocumentFragment.fromMarkdown(markdown_text).toHtml()
+        return _md_to_html(markdown_text)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -536,6 +645,14 @@ class ChatPopup(QWidget):
                 background-color: rgba(255,99,99,160);
                 border-color: rgba(255,140,140,220);
             }
+
+            /* Settings button */
+            QPushButton#settingsButton {
+                background-color: rgba(255,255,255,20);
+                border: 1px solid rgba(255,255,255,50);
+                border-radius: 8px; color: #dbe8ff; font-weight: 700;
+            }
+            QPushButton#settingsButton:hover { background-color: rgba(71,134,255,120); }
 
             /* Pin button */
             QPushButton#pinButton {
